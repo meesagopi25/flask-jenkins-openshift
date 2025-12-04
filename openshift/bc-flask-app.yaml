@@ -1,1 +1,21 @@
+apiVersion: image.openshift.io/v1
+kind: ImageStream
+metadata:
+  name: flask-app
+---
+apiVersion: build.openshift.io/v1
+kind: BuildConfig
+metadata:
+  name: flask-app
+spec:
+  output:
+    to:
+      kind: ImageStreamTag
+      name: flask-app:latest
+  source:
+    type: Binary           # Jenkins will push source from workspace
+    binary: {}
+  strategy:
+    dockerStrategy: {}     # Uses Dockerfile from the uploaded directory
+  triggers: []             # We trigger builds from Jenkins, so no webhooks
 
