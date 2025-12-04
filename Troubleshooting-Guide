@@ -1,0 +1,335 @@
+Here is **Item 4 → The Full Troubleshooting Guide**, covering all issues you faced and all issues that typically occur in a Jenkins → OpenShift CI/CD setup.
+
+---
+
+# 🛠️ **TROUBLESHOOTING GUIDE — Jenkins CI/CD to OpenShift (Flask App)**
+
+This guide contains **all known errors, reasons, and fixes** for:
+
+* Jenkins running inside OpenShift Sandbox
+* Pipelines using `oc` CLI
+* OpenShift BuildConfig + DeploymentConfig
+* OAuth token authentication
+* Build + Deployment failures
+* Route / networking issues
+
+---
+
+# 🔧 **1. Jenkins Cannot Find Credentials**
+
+### **Error**
+
+```
+ERROR: Could not find credentials entry with ID 'oc-token'
+```
+
+### **Cause**
+
+The OpenShift Jenkins image **does NOT support Global Credentials**.
+
+OpenShift automatically injects credentials **only under the Jenkins user**, not global scope.
+
+### ✔️ **Fix**
+
+Do **NOT** use `withCredentials()` for OpenShift login.
+Instead use:
+
+```sh
+oc login --token=$(oc whoami -t) --server=https://kubernetes.default.svc
+```
+
+This uses the **OAuth token of the Jenkins service account**.
+
+---
+
+# 🔧 **2. oc login fails inside pipeline**
+
+### **Issue**
+
+`oc login --token=$OC_TOKEN` → unauthorized
+
+### **Cause**
+
+You used a manually created Secret or incorrect credentials ID.
+
+### ✔️ **Fix**
+
+Always use the service account token:
+
+```sh
+oc login --token=$(oc whoami -t) --server=https://kubernetes.default.svc
+```
+
+And ensure Jenkins SA has permissions:
+
+```sh
+oc adm policy add-role-to-user edit -z jenkins -n <your-namespace>
+```
+
+---
+
+# 🔧 **3. DeploymentConfig does NOT redeploy after new build**
+
+### **Cause**
+
+DeploymentConfigs do NOT auto-trigger on ImageStream changes unless configured.
+
+### ✔️ **Fix**
+
+Ensure DC contains:
+
+```yaml
+triggers:
+- type: ImageChange
+```
+
+Or manually trigger:
+
+```sh
+oc rollout latest dc/flask-app
+```
+
+---
+
+# 🔧 **4. Route responds with 503 or 404**
+
+### **Common Causes**
+
+* Pod is not running
+* Wrong service selector
+* Container port mismatch
+* Route pointing to wrong service port
+
+### ✔️ **Fix checklist**
+
+Validate pod:
+
+```sh
+oc get pods
+oc logs -f dc/flask-app
+```
+
+Validate service:
+
+```sh
+oc describe svc flask-app
+```
+
+Expected output:
+
+```
+Selector: app=flask-app
+Port: 8080 → 8080
+```
+
+Check route:
+
+```sh
+oc get route flask-app -o yaml
+```
+
+Ensure it points to `service: flask-app`.
+
+---
+
+# 🔧 **5. ImagePullBackoff**
+
+### **Cause**
+
+Deployment is trying to pull an image that does NOT exist.
+
+### ✔️ **Fix**
+
+Verify ImageStream tag exists:
+
+```sh
+oc get is flask-app -o yaml
+```
+
+Verify BuildConfig pushed to ImageStream:
+
+```sh
+oc start-build flask-app --from-dir=flask-app --follow --wait
+```
+
+Make sure DC image matches:
+
+```yaml
+image: image-registry.openshift-image-registry.svc:5000/<namespace>/flask-app:latest
+```
+
+---
+
+# 🔧 **6. BuildConfig error: Cannot find Dockerfile**
+
+### **Cause**
+
+You must start a binary build **from the directory containing the Dockerfile**.
+
+### ✔️ **Fix in Jenkinsfile**
+
+```sh
+oc start-build flask-app --from-dir=flask-app --follow --wait
+```
+
+Your folder structure must be:
+
+```
+flask-app/
+  ├── Dockerfile
+  ├── app.py
+  └── requirements.txt
+```
+
+---
+
+# 🔧 **7. oc not found inside Jenkins**
+
+### **Cause**
+
+You may run a container agent that does not include the oc CLI.
+
+### ✔️ **Fix**
+
+Never use custom Docker agents for OpenShift Jenkins.
+
+Use **Jenkins built-in agent** inside OpenShift:
+
+```
+image: openshift/jenkins:<tag>
+```
+
+It includes:
+
+* oc
+* skopeo
+* git
+* buildah (optional)
+* mvn (optional)
+
+---
+
+# 🔧 **8. You cannot access “Manage Jenkins”**
+
+### **Cause**
+
+When Jenkins runs in OpenShift with OAuth, **OpenShift controls authorization**, so you cannot see global admin menus unless:
+
+* You are a cluster admin
+* You logged in using the correct OAuth scope
+* You grant extended permissions
+
+### ✔️ **Fix**
+
+Give your OpenShift user admin rights **only for Jenkins**:
+
+```sh
+oc adm policy add-role-to-user admin <your-username> -n <project>
+```
+
+Then delete and recreate the Jenkins pod:
+
+```sh
+oc delete pod -l name=jenkins
+```
+
+---
+
+# 🔧 **9. Incorrect API server in pipeline**
+
+### **Cause**
+
+Using:
+
+```
+--server=https://172.30.0.1:443
+```
+
+But this works only from **inside the cluster**, and only from pods using the default service DNS.
+
+### ✔️ **Correct API server for Jenkins (in OpenShift)**
+
+```sh
+--server=https://kubernetes.default.svc
+```
+
+---
+
+# 🔧 **10. BuildConfig created but build fails**
+
+### **Error examples**
+
+```
+error: no Dockerfile found
+error: binary build source is empty
+```
+
+### ✔️ **Fix**
+
+Ensure the binary build directory contains file list:
+
+```sh
+cd flask-app
+ls
+```
+
+Expected output:
+
+```
+Dockerfile
+app.py
+requirements.txt
+```
+
+---
+
+# 🧪 **11. Python Syntax Check Failure**
+
+### **Cause**
+
+Jenkins pod may not have Python installed.
+
+### ✔️ Fix
+
+Add a safety check:
+
+```sh
+if command -v python3 >/dev/null 2>&1; then python3 -m py_compile app.py; fi
+```
+
+---
+
+# 🌐 **12. SSL error when accessing OpenShift Route**
+
+### **Cause**
+
+Using `https://` with `curl -k`.
+
+If route uses `edge` TLS, it will terminate TLS at the router.
+
+### ✔️ Fix
+
+Use:
+
+```sh
+curl -vk https://<your-route>
+```
+
+If app uses HTTP internally, do not expose TLS internally.
+
+---
+
+# 🎯 Summary Cheat Sheet
+
+| Problem                        | Correct Fix                           |
+| ------------------------------ | ------------------------------------- |
+| Credentials not found          | Use `oc whoami -t` and OAuth login    |
+| Cannot access Manage Jenkins   | Add OpenShift admin role              |
+| BuildConfig missing Dockerfile | Use correct directory                 |
+| Route fails                    | Check service selector + pod status   |
+| Deployment not updated         | Add ImageChange trigger               |
+| oc login fails                 | Use in-cluster server DNS             |
+| Build fails                    | Use binary build with Docker strategy |
+
+---
+
