@@ -5,7 +5,8 @@ pipeline {
     environment {
         APP_NAME    = "flask-app"
         OC_PROJECT  = "mg1982-dev"
-        OC_SERVER   = "https://172.30.0.1:443"
+        OC_SERVER   = "https://kubernetes.default.svc"   
+        // Jenkins pod now already has OC_TOKEN injected from DeploymentConfig
     }
 
     stages {
@@ -32,13 +33,17 @@ pipeline {
 
         stage('Login to OpenShift') {
             steps {
-                withCredentials([string(credentialsId: 'oc-token', variable: 'OC_TOKEN')]) {
-                    sh '''
-                      echo "Logging into OpenShift..."
-                      oc login --token=$OC_TOKEN --server='${OC_SERVER}' --insecure-skip-tls-verify
-                      oc project ${OC_PROJECT}
-                    '''
-                }
+                sh '''
+                  echo "Using OC_TOKEN injected into Jenkins pod..."
+                  echo "Logging in to OpenShift..."
+
+                  oc login --token=$OC_TOKEN --server=${OC_SERVER}
+
+                  oc project ${OC_PROJECT}
+
+                  echo "Logged in as:"
+                  oc whoami
+                '''
             }
         }
 
@@ -46,9 +51,12 @@ pipeline {
             steps {
                 sh '''
                   oc project ${OC_PROJECT}
-                  if ! oc get bc/${APP_NAME} >/dev/null 2>&1; then
+
+                  if ! oc get bc/${APP_NAME} >/dev-null 2>&1; then
+                    echo "Creating BuildConfig..."
                     oc apply -f openshift/bc-flask-app.yaml
                   else
+                    echo "BuildConfig exists — applying latest YAML..."
                     oc apply -f openshift/bc-flask-app.yaml
                   fi
                 '''
