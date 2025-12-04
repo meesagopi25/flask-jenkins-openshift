@@ -5,7 +5,7 @@ pipeline {
     environment {
         APP_NAME    = "flask-app"
         OC_PROJECT  = "mg1982-dev"
-        OC_SERVER   = "https://kubernetes.default.svc"
+        OC_SERVER   = "https://172.30.0.1:443"
         IMAGE_TAG   = "build-${BUILD_NUMBER}"
     }
 
