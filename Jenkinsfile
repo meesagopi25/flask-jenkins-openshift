@@ -5,8 +5,7 @@ pipeline {
     environment {
         APP_NAME    = "flask-app"
         OC_PROJECT  = "mg1982-dev"
-        OC_SERVER   = "https://kubernetes.default.svc"   
-        // Jenkins pod now already has OC_TOKEN injected from DeploymentConfig
+        OC_SERVER   = "https://kubernetes.default.svc"
     }
 
     stages {
@@ -34,10 +33,15 @@ pipeline {
         stage('Login to OpenShift') {
             steps {
                 sh '''
-                  echo "Using OC_TOKEN injected into Jenkins pod..."
-                  echo "Logging in to OpenShift..."
+                  echo "Logging into OpenShift using SERVICE ACCOUNT TOKEN..."
 
-                  oc login --token=$OC_TOKEN --server=${OC_SERVER}
+                  # Service account token mounted inside the Jenkins pod
+                  SA_TOKEN=$(cat /var/run/secrets/kubernetes.io/serviceaccount/token)
+
+                  oc login \
+                    --token="$SA_TOKEN" \
+                    --server="${OC_SERVER}" \
+                    --insecure-skip-tls-verify
 
                   oc project ${OC_PROJECT}
 
@@ -52,7 +56,7 @@ pipeline {
                 sh '''
                   oc project ${OC_PROJECT}
 
-                  if ! oc get bc/${APP_NAME} >/dev-null 2>&1; then
+                  if ! oc get bc/${APP_NAME} >/dev/null 2>&1; then
                     echo "Creating BuildConfig..."
                     oc apply -f openshift/bc-flask-app.yaml
                   else
@@ -67,6 +71,7 @@ pipeline {
             steps {
                 sh '''
                   oc project ${OC_PROJECT}
+                  echo "Starting OpenShift build..."
                   oc start-build ${APP_NAME} --from-dir=flask-app --follow --wait
                 '''
             }
@@ -76,7 +81,10 @@ pipeline {
             steps {
                 sh '''
                   oc project ${OC_PROJECT}
+                  echo "Applying DeploymentConfig..."
                   oc apply -f openshift/dc-flask-app.yaml
+
+                  echo "Waiting for rollout..."
                   oc rollout status deployment/${APP_NAME} --timeout=180s
                 '''
             }
