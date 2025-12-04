@@ -5,8 +5,10 @@ pipeline {
     environment {
         APP_NAME    = "flask-app"
         OC_PROJECT  = "mg1982-dev"
-        OC_SERVER   = "https://kubernetes.default.svc"
-        // IMPORTANT: OC_TOKEN is already injected into Jenkins pod via DeploymentConfig
+        OC_SERVER   = "https://kubernetes.default.svc"   // always correct inside cluster
+        // IMPORTANT: OC_TOKEN must be injected via DeploymentConfig env var
+        // Example:
+        // oc set env dc/jenkins OC_TOKEN=$(oc create token jenkins -n mg1982-dev)
     }
 
     stages {
@@ -21,14 +23,12 @@ pipeline {
         stage('Quick Python Check (optional)') {
             steps {
                 sh '''
-                    if command -v python3 >/dev/null 2>&1; then
-                        cd flask-app
-                        python3 -m py_compile app.py || {
-                            echo "Python syntax error"; exit 1;
-                        }
-                    else
-                        echo "python3 not installed in Jenkins pod, skipping check"
-                    fi
+                  if command -v python3 >/dev/null 2>&1; then
+                      cd flask-app
+                      python3 -m py_compile app.py || { echo "Python syntax error"; exit 1; }
+                  else
+                      echo "python3 not installed, skipping..."
+                  fi
                 '''
             }
         }
@@ -36,19 +36,18 @@ pipeline {
         stage('Login to OpenShift') {
             steps {
                 sh '''
-                    echo "Logging in using OC_TOKEN environment variable..."
-
+                    echo "Logging in using service account token injected via OC_TOKEN..."
+                    
                     if [ -z "$OC_TOKEN" ]; then
-                        echo "ERROR: OC_TOKEN is NOT set in Jenkins environment!"
-                        echo "Fix: Run this command:"
-                        echo "  oc set env dc/jenkins OC_TOKEN=$(oc create token jenkins -n mg1982-dev --duration=87600h)"
+                        echo "ERROR: OC_TOKEN is not set in Jenkins DeploymentConfig!"
                         exit 1
                     fi
 
-                    oc login --token=$OC_TOKEN --server=${OC_SERVER} --insecure-skip-tls-verify
+                    oc login --token="$OC_TOKEN" --server=${OC_SERVER} --insecure-skip-tls-verify || { echo "LOGIN FAILED"; exit 1; }
+
                     oc project ${OC_PROJECT}
                     echo "Logged in as:"
-                    oc whoami
+                    oc whoami || true
                 '''
             }
         }
@@ -59,10 +58,10 @@ pipeline {
                     oc project ${OC_PROJECT}
 
                     if ! oc get bc/${APP_NAME} >/dev/null 2>&1; then
-                        echo "BuildConfig not found → creating..."
+                        echo "BuildConfig does not exist — creating..."
                         oc apply -f openshift/bc-flask-app.yaml
                     else
-                        echo "BuildConfig exists → updating..."
+                        echo "BuildConfig exists — updating..."
                         oc apply -f openshift/bc-flask-app.yaml
                     fi
                 '''
@@ -73,8 +72,11 @@ pipeline {
             steps {
                 sh '''
                     oc project ${OC_PROJECT}
-                    echo "Starting binary build..."
-                    oc start-build ${APP_NAME} --from-dir=flask-app --follow --wait
+                    echo "Starting source-to-image build..."
+                    oc start-build ${APP_NAME} --from-dir=flask-app --follow --wait || {
+                        echo "Build failed"
+                        exit 1
+                    }
                 '''
             }
         }
@@ -83,10 +85,14 @@ pipeline {
             steps {
                 sh '''
                     oc project ${OC_PROJECT}
+                    echo "Applying deployment..."
                     oc apply -f openshift/dc-flask-app.yaml
 
                     echo "Waiting for rollout..."
-                    oc rollout status deployment/${APP_NAME} --timeout=180s
+                    oc rollout status deployment/${APP_NAME} --timeout=180s || {
+                        echo "Rollout failed"
+                        exit 1
+                    }
                 '''
             }
         }
@@ -95,11 +101,13 @@ pipeline {
     post {
         success {
             sh '''
-                oc project ${OC_PROJECT}
-                echo "Application URL:"
-                oc get route ${APP_NAME} -o jsonpath='{.spec.host}{"\n"}'
+                echo "Fetching the route for the application..."
+
+                ROUTE=$(oc get route ${APP_NAME} -o jsonpath='{.spec.host}')
+                printf "Application URL: https://%s\n" "$ROUTE"
             '''
         }
+
         failure {
             echo "Pipeline failed. Check logs above."
         }
