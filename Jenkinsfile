@@ -1,13 +1,20 @@
 pipeline {
+
     agent any
+
+    options {
+        // IMPORTANT: allows pipeline to access credentials in User → mg1982
+        withCredentialsUserId()
+    }
 
     environment {
         APP_NAME    = "flask-app"
-        OC_PROJECT  = "mg1982-dev"   // change if your project is different
-        OC_SERVER   = "https://172.30.0.1:443" // adjust to your sandbox API URL
+        OC_PROJECT  = "mg1982-dev"                       // change only if your project differs
+        OC_SERVER   = "https://172.30.0.1:443"           // sandbox: internal API, works inside cluster
     }
 
     stages {
+
         stage('Checkout') {
             steps {
                 checkout scm
@@ -17,7 +24,6 @@ pipeline {
 
         stage('Quick Python check (optional)') {
             steps {
-                // Jenkins OpenShift image may not have python3; if it fails, you can comment this stage out
                 sh '''
                   if command -v python3 >/dev/null 2>&1; then
                     cd flask-app
@@ -33,6 +39,7 @@ pipeline {
             steps {
                 withCredentials([string(credentialsId: 'oc-token', variable: 'OC_TOKEN')]) {
                     sh '''
+                      echo "Logging in to OpenShift..."
                       oc login --token=$OC_TOKEN --server='${OC_SERVER}' --insecure-skip-tls-verify
                       oc project ${OC_PROJECT}
                     '''
@@ -46,10 +53,10 @@ pipeline {
                   oc project ${OC_PROJECT}
 
                   if ! oc get bc/${APP_NAME} >/dev/null 2>&1; then
-                    echo "Creating ImageStream + BuildConfig from YAML..."
+                    echo "BuildConfig not found — creating..."
                     oc apply -f openshift/bc-flask-app.yaml
                   else
-                    echo "BuildConfig ${APP_NAME} already exists, updating if needed..."
+                    echo "BuildConfig found — ensuring it is up-to-date..."
                     oc apply -f openshift/bc-flask-app.yaml
                   fi
                 '''
@@ -60,7 +67,7 @@ pipeline {
             steps {
                 sh '''
                   oc project ${OC_PROJECT}
-                  # Start binary build using the flask-app directory (contains Dockerfile)
+                  echo "Starting OpenShift Binary Build..."
                   oc start-build ${APP_NAME} --from-dir=flask-app --follow --wait
                 '''
             }
@@ -70,7 +77,10 @@ pipeline {
             steps {
                 sh '''
                   oc project ${OC_PROJECT}
+                  echo "Applying DeploymentConfig..."
                   oc apply -f openshift/dc-flask-app.yaml
+
+                  echo "Waiting for rollout..."
                   oc rollout status deployment/${APP_NAME} --timeout=180s
                 '''
             }
@@ -81,7 +91,7 @@ pipeline {
         success {
             sh '''
               oc project ${OC_PROJECT}
-              echo "Application URL:"
+              echo "=== Application Route ==="
               oc get route ${APP_NAME} -o jsonpath='{.spec.host}{"\\n"}'
             '''
         }
@@ -90,4 +100,3 @@ pipeline {
         }
     }
 }
-
