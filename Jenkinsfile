@@ -58,7 +58,7 @@ pipeline {
                     oc set image deployment/${APP_NAME} ${APP_NAME}=image-registry.openshift-image-registry.svc:5000/${OC_PROJECT}/${APP_NAME}:${IMAGE_TAG}
 
                     echo "Triggering rollout..."
-                    oc rollout status deployment/${APP_NAME} --timeout=180s
+                    oc rollout status deployment/${APP_NAME} --timeout=300s
                 '''
             }
         }
