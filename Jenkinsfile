@@ -3,46 +3,31 @@ pipeline {
     agent any
 
     environment {
-        APP_NAME   = "flask-app"
-        OC_PROJECT = "mg1982-dev"
-        OC_SERVER  = "https://kubernetes.default.svc"
+        APP_NAME    = "flask-app"
+        OC_PROJECT  = "mg1982-dev"
+        OC_SERVER   = "https://kubernetes.default.svc"
+        // IMPORTANT: OC_TOKEN is already injected into Jenkins pod via DeploymentConfig
     }
 
     stages {
 
-        stage('Clean Workspace') {
-            steps {
-                sh '''
-                    echo "Cleaning workspace manually..."
-                    find . -mindepth 1 -maxdepth 1 -exec rm -rf {} +
-                '''
-            }
-        }
-
-        stage('Checkout Code') {
+        stage('Checkout') {
             steps {
                 checkout scm
                 sh 'ls -R'
             }
         }
 
-        stage('Remove Python Cache') {
-            steps {
-                sh '''
-                    echo "Removing __pycache__..."
-                    find . -type d -name "__pycache__" -exec rm -rf {} +
-                '''
-            }
-        }
-
-        stage('Quick Python Syntax Check') {
+        stage('Quick Python Check (optional)') {
             steps {
                 sh '''
                     if command -v python3 >/dev/null 2>&1; then
-                      cd flask-app
-                      python3 -m py_compile app.py || { echo "ERROR: Python syntax error"; exit 1; }
+                        cd flask-app
+                        python3 -m py_compile app.py || {
+                            echo "Python syntax error"; exit 1;
+                        }
                     else
-                      echo "python3 not installed; skipping syntax check"
+                        echo "python3 not installed in Jenkins pod, skipping check"
                     fi
                 '''
             }
@@ -51,10 +36,17 @@ pipeline {
         stage('Login to OpenShift') {
             steps {
                 sh '''
-                    echo "Logging in using service account token injected into Jenkins pod..."
-                    oc login --token=$OC_TOKEN --server=${OC_SERVER}
-                    oc project ${OC_PROJECT}
+                    echo "Logging in using OC_TOKEN environment variable..."
 
+                    if [ -z "$OC_TOKEN" ]; then
+                        echo "ERROR: OC_TOKEN is NOT set in Jenkins environment!"
+                        echo "Fix: Run this command:"
+                        echo "  oc set env dc/jenkins OC_TOKEN=$(oc create token jenkins -n mg1982-dev --duration=87600h)"
+                        exit 1
+                    fi
+
+                    oc login --token=$OC_TOKEN --server=${OC_SERVER} --insecure-skip-tls-verify
+                    oc project ${OC_PROJECT}
                     echo "Logged in as:"
                     oc whoami
                 '''
@@ -66,12 +58,11 @@ pipeline {
                 sh '''
                     oc project ${OC_PROJECT}
 
-                    echo "Checking BuildConfig..."
                     if ! oc get bc/${APP_NAME} >/dev/null 2>&1; then
-                        echo "BuildConfig not found — creating..."
+                        echo "BuildConfig not found → creating..."
                         oc apply -f openshift/bc-flask-app.yaml
                     else
-                        echo "BuildConfig exists — updating YAML..."
+                        echo "BuildConfig exists → updating..."
                         oc apply -f openshift/bc-flask-app.yaml
                     fi
                 '''
@@ -81,7 +72,8 @@ pipeline {
         stage('Build Image in OpenShift') {
             steps {
                 sh '''
-                    echo "Starting OpenShift build..."
+                    oc project ${OC_PROJECT}
+                    echo "Starting binary build..."
                     oc start-build ${APP_NAME} --from-dir=flask-app --follow --wait
                 '''
             }
@@ -90,11 +82,8 @@ pipeline {
         stage('Deploy / Rollout') {
             steps {
                 sh '''
-                    echo "Applying Deployment YAML..."
+                    oc project ${OC_PROJECT}
                     oc apply -f openshift/dc-flask-app.yaml
-
-                    echo "Forcing new rollout..."
-                    oc rollout restart deployment/${APP_NAME} || true
 
                     echo "Waiting for rollout..."
                     oc rollout status deployment/${APP_NAME} --timeout=180s
@@ -106,12 +95,13 @@ pipeline {
     post {
         success {
             sh '''
+                oc project ${OC_PROJECT}
                 echo "Application URL:"
-                oc get route ${APP_NAME} -o jsonpath='{.spec.host}{"\\n"}'
+                oc get route ${APP_NAME} -o jsonpath='{.spec.host}{"\n"}'
             '''
         }
         failure {
-            echo "Pipeline failed. Review error logs above."
+            echo "Pipeline failed. Check logs above."
         }
     }
 }
