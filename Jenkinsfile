@@ -2,15 +2,10 @@ pipeline {
 
     agent any
 
-    options {
-        // IMPORTANT: allows pipeline to access credentials in User → mg1982
-        withCredentialsUserId()
-    }
-
     environment {
         APP_NAME    = "flask-app"
-        OC_PROJECT  = "mg1982-dev"                       // change only if your project differs
-        OC_SERVER   = "https://172.30.0.1:443"           // sandbox: internal API, works inside cluster
+        OC_PROJECT  = "mg1982-dev"
+        OC_SERVER   = "https://172.30.0.1:443"
     }
 
     stages {
@@ -39,7 +34,7 @@ pipeline {
             steps {
                 withCredentials([string(credentialsId: 'oc-token', variable: 'OC_TOKEN')]) {
                     sh '''
-                      echo "Logging in to OpenShift..."
+                      echo "Logging into OpenShift..."
                       oc login --token=$OC_TOKEN --server='${OC_SERVER}' --insecure-skip-tls-verify
                       oc project ${OC_PROJECT}
                     '''
@@ -51,12 +46,9 @@ pipeline {
             steps {
                 sh '''
                   oc project ${OC_PROJECT}
-
                   if ! oc get bc/${APP_NAME} >/dev/null 2>&1; then
-                    echo "BuildConfig not found — creating..."
                     oc apply -f openshift/bc-flask-app.yaml
                   else
-                    echo "BuildConfig found — ensuring it is up-to-date..."
                     oc apply -f openshift/bc-flask-app.yaml
                   fi
                 '''
@@ -67,7 +59,6 @@ pipeline {
             steps {
                 sh '''
                   oc project ${OC_PROJECT}
-                  echo "Starting OpenShift Binary Build..."
                   oc start-build ${APP_NAME} --from-dir=flask-app --follow --wait
                 '''
             }
@@ -77,10 +68,7 @@ pipeline {
             steps {
                 sh '''
                   oc project ${OC_PROJECT}
-                  echo "Applying DeploymentConfig..."
                   oc apply -f openshift/dc-flask-app.yaml
-
-                  echo "Waiting for rollout..."
                   oc rollout status deployment/${APP_NAME} --timeout=180s
                 '''
             }
@@ -91,7 +79,7 @@ pipeline {
         success {
             sh '''
               oc project ${OC_PROJECT}
-              echo "=== Application Route ==="
+              echo "Application URL:"
               oc get route ${APP_NAME} -o jsonpath='{.spec.host}{"\\n"}'
             '''
         }
