@@ -4,7 +4,7 @@ app = Flask(__name__)
 
 @app.route("/")
 def hello():
-    return "Hello from Flask CI/CD on OpenShift via Jenkins!", 200
+    return "Hello from Flask CI/CD on OpenShift via Jenkins! The CICD proces is successful", 200
 
 @app.route("/health")
 def health():
